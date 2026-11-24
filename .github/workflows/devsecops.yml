@@ -1,0 +1,57 @@
+name: DevSecOps Pipeline - PAI4
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-static-analysis:
+    name: Build, SAST & SCA (Opción A)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      # 1. SAST - Análisis estático del código fuente con Semgrep
+      - name: SAST - Semgrep Scan (Quality Gate 1 - Aviso)
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/src" \
+            semgrep/semgrep \
+            semgrep scan \
+            --config=p/javascript \
+            --config=p/typescript \
+            --config=p/owasp-top-ten \
+            --severity=ERROR \
+            --severity=WARNING \
+            --error \
+            --metrics=off \
+            --json \
+            --output=/src/semgrep-report.json \
+            /src
+
+      # 2. SCA - Análisis de dependencias con Snyk
+      - name: Instalar Snyk CLI
+        uses: snyk/actions/setup@master
+
+      - name: SCA - Snyk Dependency Scan (Quality Gate 1 - Aviso)
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          snyk test --severity-threshold=high --json-file-output=snyk-report.json
+
+      # 3. Subida de informes como Artifacts para Opción B y Opción C (DefectDojo)
+      - name: Subir informes SAST y SCA
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis-reports
+          path: |
+            semgrep-report.json
+            snyk-report.json
+          if-no-files-found: warn
