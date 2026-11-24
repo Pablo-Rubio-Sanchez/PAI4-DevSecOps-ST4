@@ -43,6 +43,7 @@ jobs:
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
+          npm install --package-lock-only --ignore-scripts --legacy-peer-deps
           snyk test --severity-threshold=high --json-file-output=snyk-report.json
 
       # 3. Subida de informes como Artifacts para Opción B y Opción C (DefectDojo)
