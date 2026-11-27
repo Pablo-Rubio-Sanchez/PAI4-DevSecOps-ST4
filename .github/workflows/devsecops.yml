@@ -7,13 +7,14 @@ on:
     branches: [ main, master ]
 
 jobs:
-  # OPCIÓN A: Análisis Estático (SAST + SCA)
+  # =========================================================
+  # ETAPA 1: BUILD Y ANÁLISIS ESTÁTICO / IaC (EN PARALELO)
+  # =========================================================
 
-  # 1A. SAST - Análisis estático del código fuente con Semgrep
+  # 1A. SAST - Análisis estático del código fuente con Semgrep (Compañero A)
   sast-semgrep:
     name: "SAST: Semgrep"
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
@@ -44,11 +45,10 @@ jobs:
           path: semgrep-report.json
           if-no-files-found: warn
 
-  # 1B. SCA - Análisis de dependencias con Snyk
+  # 1B. SCA - Análisis de dependencias con Snyk (Compañero A)
   sca-snyk:
     name: "SCA: Snyk"
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
@@ -72,27 +72,11 @@ jobs:
           path: snyk-report.json
           if-no-files-found: warn
 
-  # GATEWAY 1: Quality Gate A (Modo Aviso - Umbral: >= 1 Crítica/Alta)
-  quality-gate-a:
-    name: "Quality Gate A (Modo Aviso)"
+  # 1C. IaC - Análisis de Dockerfile y Terraform con Trivy (Tu Bloque B)
+  iac-trivy:
+    name: "IaC: Trivy"
     runs-on: ubuntu-latest
-    needs: [sast-semgrep, sca-snyk] # Opción B añadirá aquí build-image e iac-trivy
-    if: always()
-
     steps:
-      - name: Evaluar umbral >= 1 Crítica/Alta (Modo Aviso)
-        run: |
-          echo "⚠️ Quality Gate A en Modo Aviso: hallazgos críticos/altos detectados en análisis estático."
-          echo "El pipeline continúa hacia la etapa de Staging y Análisis Dinámico sin bloquear."
-
-  # OPCIÓN B: IaC, Staging & DAST
-  iac-and-dast-analysis:
-    name: IaC, Staging & DAST (Opción B)
-    runs-on: ubuntu-latest
-    needs: quality-gate-a
-
-    steps:
-      # 1. IaC - Análisis de Dockerfile y Terraform con Trivy (Modo aviso)
       - name: Checkout del repositorio
         uses: actions/checkout@v4
 
@@ -108,7 +92,52 @@ jobs:
             --output /workspace/trivy-report.json \
             /workspace
 
-      # 2. Despliegue temporal (Staging) de OWASP Juice Shop
+      - name: Subir informe IaC
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy-report.json
+          if-no-files-found: warn
+
+  # 1D. Build - Construcción y verificación de imagen Docker (Tu Bloque B)
+  build-image:
+    name: "Build: Docker Image"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Construir imagen Docker de OWASP Juice Shop
+        run: |
+          docker build -t juice-shop-local:staging .
+
+  # =========================================================
+  # GATEWAY 1: QUALITY GATE A (MODO AVISO)
+  # =========================================================
+  quality-gate-a:
+    name: "Quality Gate A (Modo Aviso)"
+    runs-on: ubuntu-latest
+    needs: [sast-semgrep, sca-snyk, iac-trivy, build-image]
+    if: always()
+    steps:
+      - name: Descargar informes estáticos e IaC
+        uses: actions/download-artifact@v4
+
+      - name: Evaluar umbral >= 1 Crítica/Alta (Modo Aviso)
+        run: |
+          echo "=== QUALITY GATE A: MODO AVISO ==="
+          echo "⚠️ Quality Gate A en Modo Aviso: hallazgos críticos/altos detectados en análisis estático e IaC."
+          echo "El pipeline continúa hacia la etapa de Staging y Análisis Dinámico sin bloquear."
+
+  # =========================================================
+  # ETAPA 2: STAGING Y ANÁLISIS DINÁMICO DAST (TU BLOQUE B)
+  # =========================================================
+  staging-dast:
+    name: "Staging y DAST: OWASP ZAP"
+    runs-on: ubuntu-latest
+    needs: quality-gate-a
+    steps:
       - name: Desplegar OWASP Juice Shop en Staging (localhost:3000)
         run: |
           docker run -d --name juice-shop -p 3000:3000 bkimminich/juice-shop:latest
@@ -121,9 +150,8 @@ jobs:
             sleep 2
           done
 
-      # 3. DAST - Escaneo dinámico con OWASP ZAP + Quality Gate 2 (Bloqueante)
-      - name: DAST - OWASP ZAP Scan (Quality Gate 2 - Bloqueante)
-        continue-on-error: false
+      - name: DAST - Escaneo dinámico con OWASP ZAP
+        continue-on-error: true
         run: |
           chmod 777 "${{ github.workspace }}"
           docker run --rm --network="host" \
@@ -134,14 +162,38 @@ jobs:
             -x zap-report.xml \
             -r zap-report.html
 
-      # 4. Subida de informes IaC y DAST como Artifacts para Opción C (DefectDojo)
-      - name: Subir informes IaC y DAST
+      - name: Subir informes DAST
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dynamic-and-iac-reports
+          name: zap-report
           path: |
-            trivy-report.json
             zap-report.xml
             zap-report.html
           if-no-files-found: warn
+
+  # =========================================================
+  # GATEWAY 2: QUALITY GATE B (MODO BLOQUEANTE - TU BLOQUE B)
+  # =========================================================
+  quality-gate-b:
+    name: "Quality Gate B (Bloqueante)"
+    runs-on: ubuntu-latest
+    needs: staging-dast
+    steps:
+      - name: Descargar informe DAST
+        uses: actions/download-artifact@v4
+        with:
+          name: zap-report
+
+      - name: Evaluar umbral DAST (Bloqueante)
+        continue-on-error: false
+        run: |
+          echo "=== QUALITY GATE B: MODO BLOQUEANTE ==="
+          if grep -q "<riskcode>[23]</riskcode>" zap-report.xml; then
+            echo "❌ BLOQUEO DE SEGURIDAD: OWASP ZAP ha detectado vulnerabilidades por encima del umbral."
+            echo "⛔ Pipeline detenido: Se bloquea el paso a Etapa 3 (Producción)."
+            exit 1
+          else
+            echo "✅ APROBADO: Sin vulnerabilidades por encima del umbral. Listo para Producción."
+            exit 0
+          fi
