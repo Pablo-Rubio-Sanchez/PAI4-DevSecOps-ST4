@@ -238,6 +238,7 @@ jobs:
               -F "file=@${FILE_PATH}" \
               -F "product_name=OWASP Juice Shop" \
               -F "engagement_name=CI/CD Pipeline" \
+              -F "auto_create_context=true" \
               -F "active=true" \
               -F "verified=false" \
               -F "close_old_findings=true")
