@@ -236,7 +236,8 @@ jobs:
               -H "Authorization: Token ${DD_KEY}" \
               -F "scan_type=${SCAN_TYPE}" \
               -F "file=@${FILE_PATH}" \
-              -F "engagement=1" \
+              -F "product_name=OWASP Juice Shop" \
+              -F "engagement_name=CI/CD Pipeline" \
               -F "active=true" \
               -F "verified=false" \
               -F "close_old_findings=true")
