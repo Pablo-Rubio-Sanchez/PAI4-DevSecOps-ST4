@@ -197,3 +197,61 @@ jobs:
             echo "✅ APROBADO: Sin vulnerabilidades por encima del umbral. Listo para Producción."
             exit 0
           fi
+
+# =========================================================
+  # ETAPA 3: GESTIÓN CENTRALIZADA EN DEFECTDOJO (OPCIÓN C)
+  # =========================================================
+  defectdojo-upload:
+    name: "DefectDojo: Subida de Informes"
+    runs-on: ubuntu-latest
+    needs: [sast-semgrep, sca-snyk, iac-trivy, staging-dast, quality-gate-b]
+    if: always()
+    steps:
+      - name: Descargar todos los artefactos del pipeline
+        uses: actions/download-artifact@v4
+        with:
+          path: reports
+
+      - name: Verificar archivos descargados
+        run: ls -laR reports/
+
+      - name: Subir los 4 informes a DefectDojo vía API REST
+        env:
+          DD_URL: ${{ secrets.DEFECTDOJO_URL }}
+          DD_KEY: ${{ secrets.DEFECTDOJO_API_KEY }}
+        run: |
+          upload_report() {
+            local SCAN_TYPE="$1"
+            local FILE_PATH="$2"
+            echo "--------------------------------------------------"
+            echo "Subiendo [$SCAN_TYPE] desde $FILE_PATH..."
+
+            if [ ! -f "$FILE_PATH" ]; then
+              echo "⚠️ Archivo no encontrado: $FILE_PATH"
+              return 0
+            fi
+
+            HTTP_CODE=$(curl -s -o response.json -w "%{http_code}" \
+              -X POST "${DD_URL}/api/v2/reimport-scan/" \
+              -H "Authorization: Token ${DD_KEY}" \
+              -F "scan_type=${SCAN_TYPE}" \
+              -F "file=@${FILE_PATH}" \
+              -F "engagement=1" \
+              -F "active=true" \
+              -F "verified=false" \
+              -F "close_old_findings=true")
+
+            echo "Código HTTP recibido: $HTTP_CODE"
+            if [ "$HTTP_CODE" -eq 200 ] || [ "$HTTP_CODE" -eq 201 ]; then
+              echo "✅ Éxito subiendo $SCAN_TYPE"
+            else
+              echo "❌ Error subiendo $SCAN_TYPE:"
+              cat response.json
+              exit 1
+            fi
+          }
+
+          upload_report "Semgrep JSON Report" "reports/semgrep-report/semgrep-report.json"
+          upload_report "Snyk Scan" "reports/snyk-report/snyk-report.json"
+          upload_report "Trivy Scan" "reports/trivy-report/trivy-report.json"
+          upload_report "ZAP Scan" "reports/zap-report/zap-report.xml"
